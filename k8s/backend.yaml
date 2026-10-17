@@ -1,0 +1,38 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: newsiq-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: newsiq-backend
+  template:
+    metadata:
+      labels:
+        app: newsiq-backend
+    spec:
+      containers:
+        - name: backend
+          image: newsiq-backend:1.0
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: newsiq-secret
+            - configMapRef:
+                name: newsiq-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: newsiq-backend
+spec:
+  selector:
+    app: newsiq-backend
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP

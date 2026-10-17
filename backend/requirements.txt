@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+feedparser
+sumy
+sqlalchemy
+psycopg[binary]
+pydantic
+python-dotenv
+httpx
+groq
