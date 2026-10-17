@@ -22,6 +22,8 @@ spec:
           envFrom:
             - secretRef:
                 name: newsiq-secret
+            - secretRef:
+                name: newsiq-backend-secrets
             - configMapRef:
                 name: newsiq-config
 ---

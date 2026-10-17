@@ -1,15 +1,20 @@
-
+import AuthPage from './AuthPage'
 import { useEffect, useState } from 'react'
 import axios from 'axios'
 import {
   Activity, Bookmark, ChevronRight, Cpu, Globe2, Home,
   Menu, Search, Sparkles, TrendingUp, Zap, Newspaper,
-  Clock3, ArrowUpRight, RefreshCw
+  Clock3, ArrowUpRight, RefreshCw, LogOut
 } from 'lucide-react'
 import './App.css'
 
-const API_URL = 'http://localhost:8001'
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8011'
 
+const authHeaders = () => ({
+  Authorization: `Bearer ${
+    JSON.parse(sessionStorage.getItem('newsiq-session') || '{}').token || ''
+  }`,
+})
 const categories = [
   'All News', 'Technology', 'Business', 'Science', 'World', 'Sports'
 ]
@@ -46,6 +51,13 @@ function App() {
   const [activeCategory, setActiveCategory] = useState('All News')
   const [query, setQuery] = useState('')
   const [bookmarks, setBookmarks] = useState([])
+  const [authSession, setAuthSession] = useState(() => {
+  try {
+    return JSON.parse(sessionStorage.getItem('newsiq-session')) || null
+  } catch {
+    return null
+  }
+})
   const [savedArticles, setSavedArticles] = useState([])
   const [bookmarkLoading, setBookmarkLoading] = useState(false)
   const [bookmarkError, setBookmarkError] = useState('')
@@ -55,6 +67,29 @@ function App() {
   const [mobileMenu, setMobileMenu] = useState(false)
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [summaryError, setSummaryError] = useState('')
+  const historyKey = `newsiq-recently-viewed-${authSession?.user?.email || 'guest'}`
+
+  const [recentlyViewed, setRecentlyViewed] = useState([])
+
+  useEffect(() => {
+    try {
+      const savedHistory = JSON.parse(
+        localStorage.getItem(historyKey) || '[]'
+      )
+      setRecentlyViewed(Array.isArray(savedHistory) ? savedHistory : [])
+    } catch {
+      setRecentlyViewed([])
+    }
+  }, [historyKey])
+  const [articleQuestion, setArticleQuestion] = useState('')
+  const [aiAnswer, setAiAnswer] = useState('')
+  const [askLoading, setAskLoading] = useState(false)
+  const [askError, setAskError] = useState('')
+  const [showHistory, setShowHistory] = useState(false)
+  const [briefing, setBriefing] = useState(null)
+  const [briefingLoading, setBriefingLoading] = useState(false)
+  const [briefingError, setBriefingError] = useState('')
+  const [showBriefing, setShowBriefing] = useState(false)
 
   // Live news API state
   const [articles, setArticles] = useState([])
@@ -69,8 +104,23 @@ function App() {
       setApiError('')
 
       try {
+        const customTopics = (authSession?.categories || [])
+          .filter(topic =>
+            ![
+              'World',
+              'Technology',
+              'Business',
+              'Science',
+              'Sports',
+              'Other',
+            ].includes(topic)
+          )
+
         const response = await axios.get(`${API_URL}/api/news`, {
-          timeout: 20000,
+          params: {
+            topics: customTopics.join(','),
+          },
+          timeout: 60000,
         })
 
         if (!cancelled) {
@@ -82,7 +132,7 @@ function App() {
           setApiError(
             error.response
               ? `News API returned status ${error.response.status}.`
-              : 'Could not connect to NewsIQ. Check that the backend is running on port 8000.'
+              : 'Could not connect to NewsIQ. Check that the backend is running on port 8011.'
           )
         }
       } finally {
@@ -105,7 +155,9 @@ function App() {
     setBookmarkError('')
 
     try {
-      const response = await axios.get(`${API_URL}/api/bookmarks`)
+      const response = await axios.get(`${API_URL}/api/bookmarks`, {
+        headers: authHeaders(),
+      })
 
       if (!cancelled) {
         const saved = response.data || []
@@ -126,28 +178,41 @@ function App() {
   return () => {
     cancelled = true
   }
-}, [])
+}, [authSession?.token])
   
-const displayArticles = savedOnly
-  ? savedArticles.map((item, index) =>
-      normalizeArticle(
-        {
-          id: item.id,
-          url: item.article_url,
-          title: item.title,
-          description: item.description,
-          source: item.source,
-          category: item.category,
-          published: item.created_at
-            ? new Date(item.created_at).toLocaleDateString()
-            : '',
-        },
-        index
+const displayArticles = showHistory
+  ? recentlyViewed
+  : savedOnly
+    ? savedArticles.map((item, index) =>
+        normalizeArticle(
+          {
+            id: item.id,
+            url: item.article_url,
+            title: item.title,
+            description: item.description,
+            source: item.source,
+            category: item.category,
+            published: item.created_at
+              ? new Date(item.created_at).toLocaleDateString()
+              : '',
+            image: item.image || null,
+          },
+          index
+        )
       )
-    )
-  : articles
+    : articles
 
-const filtered = displayArticles.filter(article => {
+const preferredCategories = authSession?.categories || []
+const articlesInMyFeed = articles.filter(article => preferredCategories.includes(article.category)).length
+const accountEmail = authSession?.user?.email || 'Signed-in reader'
+const accountInitial = accountEmail.charAt(0).toUpperCase()
+
+const personalizedArticles =
+  savedOnly || showHistory
+    ? displayArticles
+    : displayArticles
+
+const filtered = personalizedArticles.filter(article => {
   const matchesCategory =
     activeCategory === 'All News' ||
     article.category.toLowerCase() === activeCategory.toLowerCase()
@@ -170,7 +235,9 @@ const filtered = displayArticles.filter(article => {
 
   try {
     if (existing) {
-      await axios.delete(`${API_URL}/api/bookmarks/${existing.id}`)
+      await axios.delete(`${API_URL}/api/bookmarks/${existing.id}`, {
+        headers: authHeaders(),
+      })
 
       setSavedArticles(previous =>
         previous.filter(item => item.id !== existing.id)
@@ -190,10 +257,15 @@ const filtered = displayArticles.filter(article => {
         title: article.title,
         source: article.source,
         category: article.category,
-        description: article.description
+        description: article.description,
+        image: article.image || null,
+      }, {
+        headers: authHeaders(),
       })
 
-      const saved = await axios.get(`${API_URL}/api/bookmarks`)
+      const saved = await axios.get(`${API_URL}/api/bookmarks`, {
+        headers: authHeaders(),
+      })
 
       setSavedArticles(saved.data || [])
       setBookmarks((saved.data || []).map(item => item.article_url))
@@ -209,6 +281,21 @@ const filtered = displayArticles.filter(article => {
   const openArticle = article => {
     setSelectedArticle(article)
     setShowSummary(false)
+    setArticleQuestion('')
+    setAiAnswer('')
+    setAskError('')
+    setShowHistory(false)
+
+    setRecentlyViewed(previous => {
+      const updated = [
+        article,
+        ...previous.filter(item => item.url !== article.url)
+      ].slice(0, 20)
+
+      localStorage.setItem(historyKey, JSON.stringify(updated))
+
+      return updated
+    })
   }
 
   const resetFilters = () => {
@@ -222,8 +309,23 @@ const filtered = displayArticles.filter(article => {
     setApiError('')
 
     try {
+      const customTopics = (authSession?.categories || [])
+        .filter(topic =>
+          ![
+            'World',
+            'Technology',
+            'Business',
+            'Science',
+            'Sports',
+            'Other',
+          ].includes(topic)
+        )
+
       const response = await axios.get(`${API_URL}/api/news`, {
-        timeout: 20000,
+        params: {
+          topics: customTopics.join(','),
+        },
+        timeout: 60000,
       })
 
       setArticles((response.data.articles || []).map(normalizeArticle))
@@ -231,7 +333,7 @@ const filtered = displayArticles.filter(article => {
       setApiError(
         error.response
           ? `News API returned status ${error.response.status}.`
-          : 'Could not connect to NewsIQ. Check that the backend is running.'
+          : 'Could not connect to NewsIQ. Check that the backend is running on port 8011.'
       )
     } finally {
       setLoading(false)
@@ -276,6 +378,79 @@ const generateSummary = async () => {
   }
 }
 
+const askAboutArticle = async () => {
+  if (!selectedArticle || !articleQuestion.trim()) return
+
+  setAskLoading(true)
+  setAskError('')
+  setAiAnswer('')
+
+  try {
+    const response = await axios.post(
+      `${API_URL}/api/ask-article`,
+      {
+        title: selectedArticle.title,
+        source: selectedArticle.source,
+        text: selectedArticle.description,
+        question: articleQuestion.trim()
+      },
+      { timeout: 45000 }
+    )
+
+    setAiAnswer(response.data.answer)
+  } catch (error) {
+    setAskError(
+      error.response?.data?.detail ||
+      'Could not get an AI answer. Please try again.'
+    )
+  } finally {
+    setAskLoading(false)
+  }
+}
+
+const generateDailyBriefing = async () => {
+  const relevantArticles = articles
+    .filter(article => preferredCategories.includes(article.category))
+    .slice(0, 10)
+    .map(article => ({
+      title: article.title,
+      category: article.category,
+      source: article.source,
+      description: article.description,
+    }))
+
+  if (!relevantArticles.length) {
+    setBriefingError('No articles match your selected interests.')
+    setShowBriefing(true)
+    return
+  }
+
+  setBriefingLoading(true)
+  setBriefingError('')
+  setBriefing(null)
+  setShowBriefing(true)
+
+  try {
+    const response = await axios.post(
+      `${API_URL}/api/daily-briefing`,
+      { articles: relevantArticles },
+      { timeout: 60000 }
+    )
+
+    setBriefing(response.data)
+  } catch (error) {
+    setBriefingError(
+      error.response?.data?.detail ||
+      'Could not generate your daily briefing. Please try again.'
+    )
+  } finally {
+    setBriefingLoading(false)
+  }
+}
+
+if (!authSession?.token) {
+  return <AuthPage onAuthenticated={setAuthSession} />
+}
 
   return (
     <div className="app-shell">
@@ -291,9 +466,10 @@ const generateSummary = async () => {
         <div className="side-label">WORKSPACE</div>
 
         <button
-          className={`nav-item ${!savedOnly ? 'nav-active' : ''}`}
+          className={`nav-item ${!savedOnly && !showHistory ? 'nav-active' : ''}`}
           onClick={() => {
             setSavedOnly(false)
+            setShowHistory(false)
             setMobileMenu(false)
           }}
         >
@@ -304,11 +480,26 @@ const generateSummary = async () => {
           className={`nav-item ${savedOnly ? 'nav-active' : ''}`}
           onClick={() => {
             setSavedOnly(true)
+            setShowHistory(false)
             setMobileMenu(false)
           }}
         >
           <Bookmark size={18} /> Saved articles
           <span className="nav-count">{bookmarks.length}</span>
+        </button>
+
+        <button
+          className={`nav-item ${showHistory ? 'nav-active' : ''}`}
+          onClick={() => {
+            setShowHistory(true)
+            setSavedOnly(false)
+            setSelectedArticle(null)
+            setMobileMenu(false)
+          }}
+        >
+          <Clock3 size={18} />
+          Recently viewed
+          <span className="nav-count">{recentlyViewed.length}</span>
         </button>
 
         <div className="side-label category-label">EXPLORE TOPICS</div>
@@ -320,6 +511,7 @@ const generateSummary = async () => {
             onClick={() => {
               setActiveCategory(category)
               setSavedOnly(false)
+              setShowHistory(false)
               setMobileMenu(false)
             }}
           >
@@ -336,11 +528,12 @@ const generateSummary = async () => {
           </div>
 
           <div className="profile">
-            <div className="avatar">S</div>
+            <div className="avatar">{accountInitial}</div>
             <div>
-              <strong>NewsIQ Reader</strong>
+              <strong>{accountEmail}</strong>
               <span>Personal workspace</span>
             </div>
+            <button className="icon-button" title="Log out" aria-label="Log out" onClick={() => { sessionStorage.removeItem('newsiq-session'); setAuthSession(null); }}><LogOut size={16} /></button>
           </div>
         </div>
       </aside>
@@ -357,13 +550,19 @@ const generateSummary = async () => {
 
           <div className="breadcrumb">
             Workspace <ChevronRight size={14} />
-            <strong>{savedOnly ? 'Saved articles' : activeCategory}</strong>
+            <strong>
+              {showHistory
+                ? 'Recently viewed'
+                : savedOnly
+                  ? 'Saved articles'
+                  : activeCategory}
+            </strong>
           </div>
 
           <div className="top-actions">
             <span className="live-dot" />
             <span className="live-label">YOUR NEWS SPACE</span>
-            <div className="avatar small">S</div>
+            <div className="account-top" title={accountEmail}><div className="avatar small">{accountInitial}</div><span className="account-email">{accountEmail}</span><button className="icon-button" title="Log out" aria-label="Log out" onClick={() => { sessionStorage.removeItem('newsiq-session'); setAuthSession(null); }}><LogOut size={15} /></button></div>
           </div>
         </header>
 
@@ -395,19 +594,84 @@ const generateSummary = async () => {
             </div>
           </section>
 
+          <section className="daily-briefing-card">
+            <div className="daily-briefing-header">
+              <div>
+                <div className="eyebrow">
+                  <Sparkles size={15} /> YOUR PERSONAL NEWS DIGEST
+                </div>
+                <h2>AI Daily Briefing</h2>
+                <p>
+                  Understand today's important stories in one quick read.
+                </p>
+              </div>
+
+              <button
+                className="read-button"
+                onClick={generateDailyBriefing}
+                disabled={briefingLoading}
+              >
+                <Sparkles size={16} />
+                {briefingLoading ? 'Preparing...' : 'Generate briefing'}
+              </button>
+            </div>
+
+            {showBriefing && (
+              <div className="daily-briefing-results">
+                {briefingLoading ? (
+                  <p>NewsIQ AI is connecting the key developments...</p>
+                ) : briefingError ? (
+                  <p className="summary-error">{briefingError}</p>
+                ) : briefing ? (
+                  <>
+                    <h3>{briefing.headline}</h3>
+
+                    <h4>The Big Picture</h4>
+                    <p>{briefing.overview}</p>
+
+                    <h4>Why It Matters</h4>
+                    <p>{briefing.why_it_matters}</p>
+
+                    <h4>Today's Top Stories</h4>
+                    <div className="briefing-stories">
+                      {(briefing.top_stories || []).map((story, index) => (
+                        <article
+                          className="briefing-story"
+                          key={`${story.title}-${index}`}
+                        >
+                          <span>{story.category}</span>
+                          <h5>{story.title}</h5>
+                          <p>{story.takeaway}</p>
+                          <small>{story.source}</small>
+                        </article>
+                      ))}
+                    </div>
+
+                    <button
+                      className="refresh-button"
+                      onClick={() => setShowBriefing(false)}
+                    >
+                      Close briefing
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            )}
+          </section>
+
           <section className="stats-grid">
             <div className="stat-card">
               <div className="stat-icon purple"><Newspaper size={19} /></div>
               <span>Articles fetched</span>
-              <strong>{articles.length.toString().padStart(2, '0')}</strong>
-              <small>From RSS news feeds</small>
+              <strong>{articlesInMyFeed.toString().padStart(2, '0')}</strong>
+              <small>Matching your selected interests</small>
             </div>
 
             <div className="stat-card">
               <div className="stat-icon green"><TrendingUp size={19} /></div>
               <span>Topics to explore</span>
-              <strong>{new Set(articles.map(a => a.category)).size}</strong>
-              <small>Available news categories</small>
+              <strong>{preferredCategories.length.toString().padStart(2, '0')}</strong>
+              <small>Interests saved to your account</small>
             </div>
 
             <div className="stat-card">
@@ -420,8 +684,8 @@ const generateSummary = async () => {
             <div className="stat-card">
               <div className="stat-icon blue"><Cpu size={19} /></div>
               <span>AI tools</span>
-              <strong>03</strong>
-              <small>Planned intelligence features</small>
+              <strong>01</strong>
+              <small>Working AI feature: article summaries</small>
             </div>
           </section>
 
@@ -430,11 +694,13 @@ const generateSummary = async () => {
               <div>
                 <div className="eyebrow">THE LATEST</div>
                 <h2>
-                  {savedOnly
-                    ? 'Your reading list'
-                    : activeCategory === 'All News'
-                      ? 'Discover stories'
-                      : activeCategory}
+                  {showHistory
+                    ? 'Recently viewed'
+                    : savedOnly
+                      ? 'Your reading list'
+                      : activeCategory === 'All News'
+                        ? 'Discover stories'
+                        : activeCategory}
                 </h2>
                 <p>Explore ideas, developments and perspectives.</p>
               </div>
@@ -464,6 +730,7 @@ const generateSummary = async () => {
                   onClick={() => {
                     setActiveCategory(category)
                     setSavedOnly(false)
+                    setShowHistory(false)
                   }}
                   className={`chip ${activeCategory === category ? 'chip-active' : ''}`}
                 >
@@ -639,10 +906,10 @@ const generateSummary = async () => {
 <div className="modal-actions">
   <button
     className="read-button"
-    onClick={() => toggleBookmark(selectedArticle.id)}
+    onClick={() => toggleBookmark(selectedArticle)}
   >
     <Bookmark size={16} />
-    {bookmarks.includes(selectedArticle.id)
+    {bookmarks.includes(selectedArticle.url)
       ? 'Remove bookmark'
       : 'Save article'}
   </button>
@@ -670,68 +937,56 @@ const generateSummary = async () => {
   )}
 </div>
 
+<div className="ask-ai-panel">
+  <div className="summary-title">
+    <Sparkles size={18} />
+    Ask AI About This Article
+  </div>
+
+  <form
+    onSubmit={event => {
+      event.preventDefault()
+      askAboutArticle()
+    }}
+  >
+    <input
+      value={articleQuestion}
+      onChange={event => setArticleQuestion(event.target.value)}
+      placeholder="Why is this news important?"
+      maxLength={500}
+    />
+
+    <button
+      type="submit"
+      className="read-button"
+      disabled={askLoading || !articleQuestion.trim()}
+    >
+      {askLoading ? 'Thinking...' : 'Ask AI'}
+    </button>
+  </form>
+
+  {askError && <p className="summary-error">{askError}</p>}
+
+  {aiAnswer && (
+    <div className="ai-answer">
+      <strong>AI Answer</strong>
+      <p>{aiAnswer}</p>
+    </div>
+  )}
+</div>
+
+
 {summaryError && (
   <p role="alert" className="summary-error">
     {summaryError}
   </p>
 )}
-
-{showSummary && selectedArticle.keyTakeaways?.length > 0 && (
-  <div className="takeaways">
-    <strong>Key takeaways</strong>
-    <ul>
-      {selectedArticle.keyTakeaways.map((item, index) => (
-        <li key={index}>{item}</li>
-      ))}
-    </ul>
-  </div>
+</section>
+</div>
 )}
-
-
-            <div className="modal-actions">
-              <button
-                className="read-button"
-                onClick={() => toggleBookmark(selectedArticle.id)}
-              >
-                <Bookmark size={16} />
-                {bookmarks.includes(selectedArticle.id)
-                  ? 'Remove bookmark'
-                  : 'Save article'}
-              </button>
-
-              <button
-                className="refresh-button"
-                onClick={() => setShowSummary(!showSummary)}
-              >
-                {showSummary ? 'Hide key takeaways' : 'Show key takeaways'}
-              </button>
-
-              {selectedArticle.url && (
-                <button
-                  className="refresh-button"
-                  onClick={() => window.open(
-                    selectedArticle.url,
-                    '_blank',
-                    'noopener,noreferrer'
-                  )}
-                >
-                  Read original article <ArrowUpRight size={15} />
-                </button>
-              )}
-            </div>
-
-            {showSummary && (
-              <ul className="takeaways">
-                <li>Read the original article for complete context.</li>
-                <li>Compare reporting from multiple independent sources.</li>
-                <li>Check publication dates and supporting evidence.</li>
-              </ul>
-            )}
-          </section>
-        </div>
-      )}
-    </div>
-  )
+</div>
+)
 }
+
 
 export default App
